@@ -1,5 +1,6 @@
 use clap::Parser;
 use clap::Subcommand;
+use core::panic;
 use flate2::bufread::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
@@ -32,6 +33,11 @@ enum Commands {
         write: bool,
         file: String,
     },
+    LsTree {
+        #[arg(long = "name-only")]
+        name_only: bool,
+        tree_sha: String,
+    },
 }
 
 fn main() -> io::Result<()> {
@@ -54,9 +60,9 @@ fn main() -> io::Result<()> {
 
             let object = fs::read(format!(".git/objects/{}/{}", subdirectory, filename))?;
 
-            let mut d = ZlibDecoder::new(&object[..]);
+            let mut decoder = ZlibDecoder::new(&object[..]);
             let mut s = String::new();
-            d.read_to_string(&mut s)?;
+            decoder.read_to_string(&mut s)?;
             let pr = s.split_once("\0").unwrap();
             print!("{}", pr.1);
         }
@@ -85,9 +91,86 @@ fn main() -> io::Result<()> {
                 compressed,
             )?;
         }
+        Commands::LsTree {
+            name_only,
+            tree_sha,
+        } => {
+            // Read and decompress the tree object
+            let object = fs::read(format!(
+                ".git/objects/{}/{}",
+                &tree_sha[..2],
+                &tree_sha[2..]
+            ))?;
+            let mut decoder = ZlibDecoder::new(&object[..]);
+            let mut s = Vec::new();
+            decoder.read_to_end(&mut s)?;
+
+            // Lock stdout for writing
+            let stdout = std::io::stdout();
+            let mut stdout = stdout.lock();
+
+            // Split the decompressed data and check the header
+            let (header, data) = s.split_at(
+                s.iter().position(|&x| x == 0u8).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "Invalid tree object format")
+                })? + 1,
+            );
+
+            // Iterate through tree entries
+            let mut pos = 0;
+            while pos < data.len() {
+                let null_pos = data
+                    .iter()
+                    .skip(pos)
+                    .position(|&x| x == 0u8)
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "Missing null byte in tree entry",
+                        )
+                    })?;
+
+                // Get the full entry and process it (the hash is 20 bytes long)
+                let entry = TreeEntry::from_bytes(&data[pos..pos + null_pos + 21])?;
+
+                pos += null_pos + 21;
+
+                // Write the entry name to stdout
+                stdout.write_all(&entry.name)?;
+                writeln!(stdout)?;
+            }
+        }
     }
 
     Ok(())
+}
+
+#[derive(Debug)]
+struct TreeEntry {
+    mode: String,
+    name: Vec<u8>,
+    sha: Vec<u8>,
+}
+
+impl TreeEntry {
+    fn from_bytes(data: &[u8]) -> io::Result<TreeEntry> {
+        let space_pos = data.iter().position(|&x| x == b' ').ok_or(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Missing space in tree entry",
+        ))?;
+        let null_pos = data.iter().position(|&x| x == 0u8).ok_or(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Missing null byte in tree entry",
+        ))?;
+        let mode = String::from_utf8(data[0..space_pos].to_vec())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8 in mode"))?;
+
+        Ok(Self {
+            mode,
+            name: data[space_pos + 1..null_pos].to_vec(),
+            sha: data[null_pos + 1..].to_vec(),
+        })
+    }
 }
 
 fn compute_sha1(data: &[u8]) -> String {

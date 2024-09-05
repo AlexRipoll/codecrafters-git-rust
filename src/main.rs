@@ -1,6 +1,5 @@
 use clap::Parser;
 use clap::Subcommand;
-use core::panic;
 use flate2::bufread::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
@@ -52,7 +51,7 @@ fn main() -> io::Result<()> {
             println!("Initialized got directory")
         }
         Commands::CatFile {
-            pretty_print,
+            pretty_print: _,
             object_hash,
         } => {
             let subdirectory = &object_hash[0..2];
@@ -63,10 +62,10 @@ fn main() -> io::Result<()> {
             let mut decoder = ZlibDecoder::new(&object[..]);
             let mut s = String::new();
             decoder.read_to_string(&mut s)?;
-            let pr = s.split_once("\0").unwrap();
+            let pr = s.split_once('\0').unwrap();
             print!("{}", pr.1);
         }
-        Commands::HashObject { write, file } => {
+        Commands::HashObject { write: _, file } => {
             let content = fs::read(file)?;
             let header = format!("blob {}\0", content.len());
 
@@ -76,8 +75,8 @@ fn main() -> io::Result<()> {
             let hash_hex = compute_sha1(&object);
             println!("{}", hash_hex);
 
-            let subdirectory = format!("{}", &hash_hex[..2]);
-            let filename = format!("{}", &hash_hex[2..]);
+            let subdirectory = &hash_hex[..2].to_string();
+            let filename = &hash_hex[2..].to_string();
 
             let compressed = compress_object(&object)?;
 
@@ -92,7 +91,7 @@ fn main() -> io::Result<()> {
             )?;
         }
         Commands::LsTree {
-            name_only,
+            name_only: _,
             tree_sha,
         } => {
             // Read and decompress the tree object
@@ -110,7 +109,7 @@ fn main() -> io::Result<()> {
             let mut stdout = stdout.lock();
 
             // Split the decompressed data and check the header
-            let (header, data) = s.split_at(
+            let (_header, data) = s.split_at(
                 s.iter().position(|&x| x == 0u8).ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidData, "Invalid tree object format")
                 })? + 1,
@@ -183,7 +182,7 @@ fn compute_sha1(data: &[u8]) -> String {
 
 fn compress_object(object: &[u8]) -> io::Result<Vec<u8>> {
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-    encoder.write_all(&object)?;
+    encoder.write_all(object)?;
 
     encoder.finish()
 }

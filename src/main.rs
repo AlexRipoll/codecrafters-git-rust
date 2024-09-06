@@ -37,6 +37,7 @@ enum Commands {
         name_only: bool,
         tree_sha: String,
     },
+    WriteTree,
 }
 
 fn main() -> io::Result<()> {
@@ -68,27 +69,13 @@ fn main() -> io::Result<()> {
         Commands::HashObject { write: _, file } => {
             let content = fs::read(file)?;
             let header = format!("blob {}\0", content.len());
-
             let mut object = header.into_bytes();
             object.extend_from_slice(&content);
 
-            let hash_hex = compute_sha1(&object);
-            println!("{}", hash_hex);
+            let hash = compute_sha1(&object);
 
-            let subdirectory = &hash_hex[..2].to_string();
-            let filename = &hash_hex[2..].to_string();
-
-            let compressed = compress_object(&object)?;
-
-            let subdirectory_path = format!(".git/objects/{}", subdirectory);
-            if !Path::new(&subdirectory_path).exists() {
-                fs::create_dir(&subdirectory_path)?;
-            }
-
-            fs::write(
-                format!(".git/objects/{}/{}", subdirectory, filename),
-                compressed,
-            )?;
+            write_object(&hash, &object)?;
+            println!("{}", hex::encode(&hash));
         }
         Commands::LsTree {
             name_only: _,
@@ -135,9 +122,13 @@ fn main() -> io::Result<()> {
                 pos += null_pos + 21;
 
                 // Write the entry name to stdout
-                stdout.write_all(&entry.name)?;
+                stdout.write_all(&entry.name.as_bytes())?;
                 writeln!(stdout)?;
             }
+        }
+        Commands::WriteTree => {
+            let hash = write_tree(&env::current_dir().unwrap())?;
+            println!("{}", hex::encode(&hash));
         }
     }
 
@@ -147,7 +138,7 @@ fn main() -> io::Result<()> {
 #[derive(Debug)]
 struct TreeEntry {
     mode: String,
-    name: Vec<u8>,
+    name: String,
     sha: Vec<u8>,
 }
 
@@ -166,18 +157,103 @@ impl TreeEntry {
 
         Ok(Self {
             mode,
-            name: data[space_pos + 1..null_pos].to_vec(),
+            name: String::from_utf8(data[space_pos + 1..null_pos].to_vec()).unwrap(),
             sha: data[null_pos + 1..].to_vec(),
         })
     }
 }
 
-fn compute_sha1(data: &[u8]) -> String {
+fn write_object(hash: &[u8], content: &[u8]) -> io::Result<()> {
+    let hash_hex = hex::encode(&hash);
+    let subdirectory = &hash_hex[..2].to_string();
+    let filename = &hash_hex[2..].to_string();
+
+    let subdirectory_path = Path::new(".git/objects/").join(subdirectory);
+
+    if !&subdirectory_path.exists() {
+        fs::create_dir(&subdirectory_path)?;
+    }
+
+    let compressed = compress_object(&content)?;
+
+    fs::write(subdirectory_path.join(filename), compressed)?;
+
+    Ok(())
+}
+
+fn write_blob(file_path: &Path) -> io::Result<Vec<u8>> {
+    let content = fs::read(file_path)?;
+    let header = format!("blob {}\0", content.len());
+
+    let mut blob = header.into_bytes();
+    blob.extend_from_slice(&content);
+
+    let hash = compute_sha1(&blob);
+
+    write_object(&hash, &blob)?;
+
+    Ok(hash)
+}
+
+fn write_tree(path: &Path) -> io::Result<Vec<u8>> {
+    let mut tree_entries: Vec<TreeEntry> = Vec::new();
+
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+
+        if entry.file_name() == ".git" {
+            continue;
+        }
+
+        let path = entry.path();
+        let name = entry.file_name().into_string().unwrap();
+
+        if entry.path().is_dir() {
+            let mode = "40000".to_string();
+            let hash = write_tree(&entry.path())?;
+
+            tree_entries.push(TreeEntry {
+                mode: "40000".to_string(),
+                name,
+                sha: hash,
+            })
+        } else if entry.path().is_file() {
+            // create blob
+            let hash = write_blob(&entry.path())?;
+
+            tree_entries.push(TreeEntry {
+                mode: "100644".to_string(),
+                name,
+                sha: hash,
+            })
+        }
+    }
+
+    // Sort tree entries lexicographically by name
+    tree_entries.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let mut entries: Vec<u8> = Vec::new();
+    for entry in tree_entries {
+        let entry_format = format!("{} {}\0", entry.mode, entry.name);
+        entries.extend_from_slice(entry_format.as_bytes());
+        entries.extend_from_slice(&entry.sha);
+    }
+
+    let mut tree_buf: Vec<u8> = Vec::new();
+    let header = format!("tree {}\0", entries.len());
+    tree_buf.extend_from_slice(header.as_bytes());
+    tree_buf.extend_from_slice(&entries);
+
+    let hash = compute_sha1(&tree_buf);
+    write_object(&hash, &tree_buf)?;
+
+    Ok(hash)
+}
+
+fn compute_sha1(data: &[u8]) -> Vec<u8> {
     let mut hasher = Sha1::new();
     hasher.update(data);
-    let hash = hasher.finalize();
-
-    format!("{:x}", hash)
+    hasher.finalize().to_vec()
 }
 
 fn compress_object(object: &[u8]) -> io::Result<Vec<u8>> {

@@ -33,6 +33,13 @@ enum Commands {
         tree_sha: String,
     },
     WriteTree,
+    CommitTree {
+        tree_hash: String,
+        #[arg(short = 'p')]
+        parent_hash: Option<String>,
+        #[arg(short = 'm')]
+        message: String,
+    },
 }
 
 fn main() -> io::Result<()> {
@@ -65,6 +72,17 @@ fn main() -> io::Result<()> {
         Commands::WriteTree => {
             let hash = commands::write_tree::write_tree(&env::current_dir().unwrap())?;
             println!("{}", hex::encode(&hash));
+        }
+        Commands::CommitTree {
+            tree_hash: tree_sha,
+            parent_hash,
+            message,
+        } => {
+            commands::commit_tree::commit_tree(
+                tree_sha.to_string(),
+                message.to_string(),
+                parent_hash.clone(),
+            )?;
         }
     }
 
